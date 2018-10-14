@@ -8,7 +8,6 @@ This module provides the basic API interface for Heroku.
 """
 
 import sys
-from pprint import pprint  # noqa
 
 import requests
 from requests.exceptions import HTTPError
@@ -69,44 +68,67 @@ class HerokuCore(object):
     def __repr__(self):
         return '<heroku-core at 0x%x>' % (id(self))
 
-    def authenticate(self, api_key):
-        """Logs user into Heroku with given api_key."""
-        self._api_key = api_key
+    def authenticate(self, login, secret):
+        """Logs user into Heroku with the given credentials.
+
+        This library uses Heroku's Basic Auth mecanism which can use either
+        an API Key or a Login + Token as credentials. If you also use Heroku
+        cli tools the former might be more convinient as
+
+        Args:
+            login (str | None): the user's login name
+            secret (str): the user's API key, token or password
+        """
 
         # Attach auth to session.
-        self._session.auth = ('', self._api_key)
+        self._session.auth = (login or '', secret)
 
         return self._verify_api_key()
 
     @property
     def is_authenticated(self):
-        if self._api_key_verified is None:
-            return self._verify_api_key()
-        else:
-            return self._api_key_verified
+        """Tells whether the current user has been authenticated
+        """
+        if self.__api_key_verified is None:
+            return self.__verify_api_key()
+        return self.__api_key_verified
 
     def _verify_api_key(self):
-        r = self._session.get(self._url_for('account/rate-limits'))
+        """Tells whether the user's API has been verified.
 
-        self._api_key_verified = True if r.ok else False
+        Function exists for backward compatibility reasons mainly.
+        """
+        return self._verify_credentials()
+
+    def _verify_credentials(self):
+        """Tells whether the user's credentials have been verified.
+
+        Does not care whether those credentials are an API key or some
+        login / password pair. this has
+        """
+        response = self._session.get(self._url_for('account/rate-limits'))
+
+        self._api_key_verified = True if response.ok else False
 
         return self._api_key_verified
 
     def _url_for(self, *args):
+        """Returns the url for a given resource.
+        """
         args = map(str, args)
         return '/'.join([self._heroku_url] + list(args))
 
     @staticmethod
-    def _resource_serialize(o):
+    def _resource_serialize(obj):
         """Returns JSON serialization of given object."""
-        return json.dumps(o)
+        return json.dumps(obj)
 
     @staticmethod
-    def _resource_deserialize(s):
+    def _resource_deserialize(data):
         """Returns dict deserialization of a given JSON string."""
 
         try:
-            return json.loads(s)
+            return json.loads(data)
         except ValueError:
             raise ResponseError('The API Response was not valid.')
 
@@ -313,8 +335,8 @@ class Heroku(HerokuCore):
                 resource=resource,
                 data=self._resource_serialize(payload)
             )
-            r.raise_for_status()
-            item = self._resource_deserialize(r.content.decode("utf-8"))
+            response.raise_for_status()
+            item = self._resource_deserialize(response.content.decode("utf-8"))
             app = App.new_from_dict(item, h=self)
         except HTTPError as e:
             if "Name is already taken" in str(e):
@@ -363,8 +385,8 @@ class Heroku(HerokuCore):
             resource=('oauth', 'authorizations'),
             data=self._h._resource_serialize(payload)
         )
-        r.raise_for_status()
-        item = self._resource_deserialize(r.content.decode("utf-8"))
+        response.raise_for_status()
+        item = self._resource_deserialize(response.content.decode("utf-8"))
         return OAuthClient.new_from_dict(item, h=self)
 
     def oauthauthorization_delete(self, oauthauthorization_id):
@@ -391,25 +413,25 @@ class Heroku(HerokuCore):
 
         payload = {'name': name, 'redirect_uri': redirect_uri}
 
-        r = self._http_resource(
+        response = self._http_resource(
             method='POST',
             resource=('oauth', 'clients'),
             data=self._h._resource_serialize(payload)
         )
-        r.raise_for_status()
-        item = self._resource_deserialize(r.content.decode("utf-8"))
+        response.raise_for_status()
+        item = self._resource_deserialize(response.content.decode("utf-8"))
         return OAuthClient.new_from_dict(item, h=self)
 
     def oauthclient_delete(self, oauthclient_id):
         """
         Destroys the OAuthClient with id oauthclient_id
         """
-        r = self._http_resource(
+        response = self._http_resource(
             method='DELETE',
             resource=('oauth', 'clients', oauthclient_id)
         )
-        r.raise_for_status()
-        return r.ok
+        response.raise_for_status()
+        return response.ok
 
     def oauthtoken_create(self, client_secret=None, grant_code=None, grant_type=None, refresh_token=None):
         """
@@ -433,13 +455,13 @@ class Heroku(HerokuCore):
         if grant:
             payload.update({'grant': grant})
 
-        r = self._http_resource(
+        response = self._http_resource(
             method='POST',
             resource=('oauth', 'tokens'),
             data=self._h._resource_serialize(payload)
         )
-        r.raise_for_status()
-        item = self._resource_deserialize(r.content.decode("utf-8"))
+        response.raise_for_status()
+        item = self._resource_deserialize(response.content.decode("utf-8"))
         return OAuthToken.new_from_dict(item, h=self)
 
     def run_command_on_app(self, appname, command, size=1, attach=True, printout=True, env=None):
@@ -451,14 +473,14 @@ class Heroku(HerokuCore):
         if env:
             payload['env'] = env
 
-        r = self._http_resource(
+        response = self._http_resource(
             method='POST',
             resource=('apps', appname, 'dynos'),
             data=self._resource_serialize(payload)
         )
 
-        r.raise_for_status()
-        item = self._resource_deserialize(r.content.decode("utf-8"))
+        response.raise_for_status()
+        item = self._resource_deserialize(response.content.decode("utf-8"))
         dyno = Dyno.new_from_dict(item, h=self)
 
         if attach:
@@ -491,14 +513,14 @@ class Heroku(HerokuCore):
 
     def update_appconfig(self, app_id_or_name, config):
         payload = self._resource_serialize(config)
-        r = self._http_resource(
+        response = self._http_resource(
             method='PATCH',
             resource=('apps', app_id_or_name, 'config-vars'),
             data=payload
         )
 
-        r.raise_for_status()
-        item = self._resource_deserialize(r.content.decode("utf-8"))
+        response.raise_for_status()
+        item = self._resource_deserialize(response.content.decode("utf-8"))
         return ConfigVars.new_from_dict(item, h=self)
 
     def _app_logger(self, app_id_or_name, dyno=None, lines=100, source=None, tail=0):
@@ -515,19 +537,21 @@ class Heroku(HerokuCore):
         if lines:
             payload['lines'] = lines
 
-        r = self._http_resource(
+        response = self._http_resource(
             method='POST',
             resource=('apps', app_id_or_name, 'log-sessions'),
             data=self._resource_serialize(payload)
         )
 
-        r.raise_for_status()
-        item = self._resource_deserialize(r.content.decode("utf-8"))
+        response.raise_for_status()
+        item = self._resource_deserialize(response.content.decode("utf-8"))
 
         return LogSession.new_from_dict(item, h=self, app=self)
 
     @property
     def last_request_id(self):
+        """Returns the latest HTTP request unique ID.
+        """
         return self._last_request_id
 
 
